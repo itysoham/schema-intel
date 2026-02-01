@@ -61,19 +61,27 @@ jobs:
           EOF
           )
           
-          # Call API
+          # Call API (note: endpoint includes /api)
+          echo "Calling API: $SCHEMA_INTELLIGENCE_API/api/v1/cicd/analyze"
           RESPONSE=$(curl -s -X POST \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $SCHEMA_INTELLIGENCE_TOKEN" \
             -d "$PAYLOAD" \
-            "$SCHEMA_INTELLIGENCE_API/v1/cicd/analyze")
+            "$SCHEMA_INTELLIGENCE_API/api/v1/cicd/analyze")
           
-          echo "$RESPONSE" > analysis-result.json
+          # Check if response is valid JSON (not HTML error page)
+          if echo "$RESPONSE" | jq . > /dev/null 2>&1; then
+            echo "$RESPONSE" > analysis-result.json
+          else
+            echo "Error: API returned non-JSON response"
+            echo "Response: $RESPONSE"
+            exit 1
+          fi
           
-          # Extract score and critical issues
-          SCORE=$(echo "$RESPONSE" | jq -r '.score')
-          CRITICAL=$(echo "$RESPONSE" | jq -r '.issues[] | select(.severity=="CRITICAL") | length')
-          HIGH=$(echo "$RESPONSE" | jq -r '.issues[] | select(.severity=="HIGH") | length')
+          # Extract score and critical issues from data object
+          SCORE=$(echo "$RESPONSE" | jq -r '.data.score // 0')
+          CRITICAL=$(echo "$RESPONSE" | jq -r '.data.issues[]? | select(.severity=="CRITICAL") | length' | wc -l | tr -d ' ')
+          HIGH=$(echo "$RESPONSE" | jq -r '.data.issues[]? | select(.severity=="HIGH") | length' | wc -l | tr -d ' ')
           
           echo "score=$SCORE" >> $GITHUB_OUTPUT
           echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
@@ -110,9 +118,19 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
-            const analysis = JSON.parse(fs.readFileSync('analysis-result.json', 'utf8'));
             
-            const score = analysis.score;
+            // Check if analysis file exists
+            if (!fs.existsSync('analysis-result.json')) {
+              console.log('No analysis result file found, skipping comment');
+              return;
+            }
+            
+            const response = JSON.parse(fs.readFileSync('analysis-result.json', 'utf8'));
+            
+            // Extract data from response (API returns { status: 'success', data: {...} })
+            const analysis = response.data || response;
+            
+            const score = analysis.score || 0;
             const issues = analysis.issues || [];
             const recommendations = analysis.recommendations || [];
             
