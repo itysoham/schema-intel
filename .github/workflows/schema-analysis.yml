@@ -9,9 +9,19 @@ on:
       - '**/flyway/**'
       - 'db/**'
 
+# Give permissions to write comments
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
 jobs:
   schema-analysis:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
     
     steps:
       - name: Checkout code
@@ -111,80 +121,13 @@ jobs:
           echo "✅ Schema validation passed"
           echo "validation_failed=false" >> $GITHUB_OUTPUT
       
-      - name: Post analysis comment
+      # Note: Comment is posted by backend API, not here
+      # This prevents duplicate comments
+      - name: Analysis complete
         if: always()
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const fs = require('fs');
-            
-            // Check if analysis file exists
-            if (!fs.existsSync('analysis-result.json')) {
-              console.log('No analysis result file found, skipping comment');
-              return;
-            }
-            
-            const response = JSON.parse(fs.readFileSync('analysis-result.json', 'utf8'));
-            
-            // Extract data from response (API returns { status: 'success', data: {...} })
-            const analysis = response.data || response;
-            
-            const score = analysis.score || 0;
-            const issues = analysis.issues || [];
-            const recommendations = analysis.recommendations || [];
-            
-            const criticalCount = issues.filter(i => i.severity === 'CRITICAL').length;
-            const highCount = issues.filter(i => i.severity === 'HIGH').length;
-            const mediumCount = issues.filter(i => i.severity === 'MEDIUM').length;
-            
-            const scoreEmoji = score >= 90 ? '🎉' : score >= 75 ? '✅' : score >= 50 ? '⚠️' : '❌';
-            const status = score >= 70 ? 'PASSED ✅' : 'FAILED ❌';
-            
-            let comment = `## 🔍 Schema Intelligence - Automated Analysis\n\n`;
-            comment += `**Status:** ${status}\n`;
-            comment += `**Score:** ${score}/100 ${scoreEmoji}\n\n`;
-            comment += `---\n\n`;
-            
-            if (criticalCount > 0 || highCount > 0) {
-              comment += `### ⚠️ Issues Found\n\n`;
-              comment += `- 🔴 Critical: ${criticalCount}\n`;
-              comment += `- 🟠 High: ${highCount}\n`;
-              comment += `- 🟡 Medium: ${mediumCount}\n\n`;
-              
-              if (criticalCount > 0) {
-                comment += `#### 🔴 Critical Issues\n\n`;
-                issues.filter(i => i.severity === 'CRITICAL').slice(0, 5).forEach(issue => {
-                  comment += `- **${issue.category}**: ${issue.issue}\n`;
-                  comment += `  - ${issue.suggestion}\n`;
-                  if (issue.file) comment += `  - 📄 \`${issue.file}\`\n`;
-                  comment += `\n`;
-                });
-              }
-            } else {
-              comment += `### ✅ No Critical Issues\n\n`;
-              comment += `Schema changes look good!\n\n`;
-            }
-            
-            if (recommendations.length > 0) {
-              comment += `### 📋 Recommendations\n\n`;
-              recommendations.slice(0, 5).forEach(rec => {
-                comment += `- ${rec}\n`;
-              });
-              comment += `\n`;
-            }
-            
-            comment += `---\n\n`;
-            comment += `*Analysis performed by [Schema Intelligence](${process.env.SCHEMA_INTELLIGENCE_API})*\n`;
-            comment += `*Powered by GitHub Actions*\n`;
-            
-            // Post comment
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              body: comment
-            });
+        run: |
+          echo "✅ Schema analysis completed"
+          echo "Comment posted by backend API with CrewAI analysis"
       
       - name: Fail if validation failed
         if: steps.validate.outputs.validation_failed == 'true'
