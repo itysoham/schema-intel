@@ -1,0 +1,176 @@
+name: Schema Intelligence - PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '**.sql'
+      - '**/migrations/**'
+      - '**/flyway/**'
+      - 'db/**'
+
+jobs:
+  schema-analysis:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Fetch all history for comparison
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - name: Get changed SQL files
+        id: changed-files
+        uses: tj-actions/changed-files@v40
+        with:
+          files: |
+            **.sql
+            **/migrations/**
+            **/flyway/**
+            db/**
+      
+      - name: Display changed files
+        run: |
+          echo "Changed SQL files:"
+          echo "${{ steps.changed-files.outputs.all_changed_files }}"
+      
+      - name: Analyze schema changes
+        id: analyze
+        env:
+          SCHEMA_INTELLIGENCE_API: ${{ secrets.SCHEMA_INTELLIGENCE_API_URL }}
+          SCHEMA_INTELLIGENCE_TOKEN: ${{ secrets.SCHEMA_INTELLIGENCE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Call Schema Intelligence API for analysis
+          FILES="${{ steps.changed-files.outputs.all_changed_files }}"
+          
+          # Create payload with file changes
+          PAYLOAD=$(cat <<EOF
+          {
+            "pr_number": ${{ github.event.pull_request.number }},
+            "repository": "${{ github.repository }}",
+            "base_ref": "${{ github.event.pull_request.base.ref }}",
+            "head_ref": "${{ github.event.pull_request.head.ref }}",
+            "files": $(echo "$FILES" | jq -R -s -c 'split(" ")')
+          }
+          EOF
+          )
+          
+          # Call API
+          RESPONSE=$(curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $SCHEMA_INTELLIGENCE_TOKEN" \
+            -d "$PAYLOAD" \
+            "$SCHEMA_INTELLIGENCE_API/v1/cicd/analyze")
+          
+          echo "$RESPONSE" > analysis-result.json
+          
+          # Extract score and critical issues
+          SCORE=$(echo "$RESPONSE" | jq -r '.score')
+          CRITICAL=$(echo "$RESPONSE" | jq -r '.issues[] | select(.severity=="CRITICAL") | length')
+          HIGH=$(echo "$RESPONSE" | jq -r '.issues[] | select(.severity=="HIGH") | length')
+          
+          echo "score=$SCORE" >> $GITHUB_OUTPUT
+          echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+      
+      - name: Validate against policy
+        id: validate
+        env:
+          MIN_SCORE: 70
+          ALLOW_CRITICAL: 0
+        run: |
+          SCORE=${{ steps.analyze.outputs.score }}
+          CRITICAL=${{ steps.analyze.outputs.critical }}
+          
+          if [ "$SCORE" -lt "$MIN_SCORE" ]; then
+            echo "❌ Schema score ($SCORE) is below minimum threshold ($MIN_SCORE)"
+            echo "validation_failed=true" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          if [ "$CRITICAL" -gt "$ALLOW_CRITICAL" ]; then
+            echo "❌ Found $CRITICAL critical issue(s). Maximum allowed: $ALLOW_CRITICAL"
+            echo "validation_failed=true" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          echo "✅ Schema validation passed"
+          echo "validation_failed=false" >> $GITHUB_OUTPUT
+      
+      - name: Post analysis comment
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const analysis = JSON.parse(fs.readFileSync('analysis-result.json', 'utf8'));
+            
+            const score = analysis.score;
+            const issues = analysis.issues || [];
+            const recommendations = analysis.recommendations || [];
+            
+            const criticalCount = issues.filter(i => i.severity === 'CRITICAL').length;
+            const highCount = issues.filter(i => i.severity === 'HIGH').length;
+            const mediumCount = issues.filter(i => i.severity === 'MEDIUM').length;
+            
+            const scoreEmoji = score >= 90 ? '🎉' : score >= 75 ? '✅' : score >= 50 ? '⚠️' : '❌';
+            const status = score >= 70 ? 'PASSED ✅' : 'FAILED ❌';
+            
+            let comment = `## 🔍 Schema Intelligence - Automated Analysis\n\n`;
+            comment += `**Status:** ${status}\n`;
+            comment += `**Score:** ${score}/100 ${scoreEmoji}\n\n`;
+            comment += `---\n\n`;
+            
+            if (criticalCount > 0 || highCount > 0) {
+              comment += `### ⚠️ Issues Found\n\n`;
+              comment += `- 🔴 Critical: ${criticalCount}\n`;
+              comment += `- 🟠 High: ${highCount}\n`;
+              comment += `- 🟡 Medium: ${mediumCount}\n\n`;
+              
+              if (criticalCount > 0) {
+                comment += `#### 🔴 Critical Issues\n\n`;
+                issues.filter(i => i.severity === 'CRITICAL').slice(0, 5).forEach(issue => {
+                  comment += `- **${issue.category}**: ${issue.issue}\n`;
+                  comment += `  - ${issue.suggestion}\n`;
+                  if (issue.file) comment += `  - 📄 \`${issue.file}\`\n`;
+                  comment += `\n`;
+                });
+              }
+            } else {
+              comment += `### ✅ No Critical Issues\n\n`;
+              comment += `Schema changes look good!\n\n`;
+            }
+            
+            if (recommendations.length > 0) {
+              comment += `### 📋 Recommendations\n\n`;
+              recommendations.slice(0, 5).forEach(rec => {
+                comment += `- ${rec}\n`;
+              });
+              comment += `\n`;
+            }
+            
+            comment += `---\n\n`;
+            comment += `*Analysis performed by [Schema Intelligence](${process.env.SCHEMA_INTELLIGENCE_API})*\n`;
+            comment += `*Powered by GitHub Actions*\n`;
+            
+            // Post comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: comment
+            });
+      
+      - name: Fail if validation failed
+        if: steps.validate.outputs.validation_failed == 'true'
+        run: |
+          echo "❌ Schema validation failed. Fix the issues above before merging."
+          exit 1
+
