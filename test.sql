@@ -34,6 +34,3 @@ WHERE EmployeeID = 2;
 DELETE FROM Employees
 WHERE EmployeeID = 4;
 
--- Step 8: Retrieve employees who earn more than $70,000
-SELECT * FROM Employees
-WHERE Salary > 70000;
