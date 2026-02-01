@@ -30,7 +30,4 @@ UPDATE Employees
 SET Salary = 80000.00
 WHERE EmployeeID = 2;
 
--- Step 7: Delete an employee record
-DELETE FROM Employees
-WHERE EmployeeID = 4;
 
