@@ -25,9 +25,5 @@ VALUES
 -- Step 5: Retrieve all data from the Employees table
 SELECT * FROM Employees;
 
--- Step 6: Update an employee's salary
-UPDATE Employees
-SET Salary = 80000.00
-WHERE EmployeeID = 2;
 
 
